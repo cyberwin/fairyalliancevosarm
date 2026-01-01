@@ -1,0 +1,74 @@
+name: CyberWinBrowser 双架构编译
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        arch: [amd64, arm64] # 同时编译两个架构
+
+    steps:
+      - name: 拉取源码
+        uses: actions/checkout@v4
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt update
+          sudo apt install -y g++ gcc-aarch64-linux-gnu wget unzip
+
+      - name: 下载对应架构 CEF 108 预编译库
+        env:
+          CEF_VERSION: 108.4.14+g4e28e4e+chromium-108.0.5359.124
+        run: |
+          # 创建 lib 目录
+          mkdir -p lib/${{ matrix.arch }}
+          cd lib/${{ matrix.arch }}
+
+          # 区分架构下载 CEF 库
+          if [ "${{ matrix.arch }}" = "amd64" ]; then
+            CEF_URL="https://cef-builds.spotifycdn.com/cef_binary_${CEF_VERSION}_linux64_minimal.tar.bz2"
+          else
+            CEF_URL="https://cef-builds.spotifycdn.com/cef_binary_${CEF_VERSION}_linuxarm64_minimal.tar.bz2"
+          fi
+
+          # 下载并解压
+          wget -q $CEF_URL -O cef.tar.bz2
+          tar -xjf cef.tar.bz2 --strip-components=1
+          # 拷贝核心文件
+          cp Release/libcef.so ./
+          cp Release/cef_helper ./
+          cd ../..
+
+      - name: 编译 ${{ matrix.arch }} 架构程序
+        run: |
+          # 创建输出目录
+          mkdir -p output/${{ matrix.arch }}
+          
+          # 区分架构选择编译器
+          if [ "${{ matrix.arch }}" = "amd64" ]; then
+            CXX=g++
+          else
+            CXX=aarch64-linux-gnu-g++
+          fi
+
+          # 执行编译
+          $CXX -std=c++17 -fPIC -Wall -static-libstdc++ -Wl,-rpath=./ \
+            -I./include -I./include/cef \
+            src/main.cpp src/config_parser.cpp src/global_context.cpp src/cyber_browser.cpp src/cyber_v8_handler.cpp src/ini.c \
+            -L./lib/${{ matrix.arch }} -lcef -lpthread -ldl -lrt \
+            -o output/${{ matrix.arch }}/CyberWinBrowser
+
+          # 拷贝运行依赖
+          cp lib/${{ matrix.arch }}/libcef.so lib/${{ matrix.arch }}/cef_helper output/${{ matrix.arch }}/
+
+      - name: 上传编译产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: CyberWinBrowser-${{ matrix.arch }}
+          path: output/${{ matrix.arch }}/
