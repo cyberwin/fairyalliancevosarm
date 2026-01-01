@@ -1,0 +1,78 @@
+name: 东方仙盟芯片双架构编译
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        arch: [amd64, arm64] # 同时编译两个架构
+
+    steps:
+      - name: 拉取源码
+        uses: actions/checkout@v4
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt update
+          sudo apt install -y g++ gcc-aarch64-linux-gnu wget unzip
+
+      - name: 下载对应架构 CEF 预编译库
+        run: |
+          # 创建 lib 目录
+          mkdir -p lib/${{ matrix.arch }}
+          cd lib/${{ matrix.arch }}
+
+          # 区分架构使用指定下载地址
+          if [ "${{ matrix.arch }}" = "amd64" ]; then
+            CEF_URL="https://cef-builds.spotifycdn.com/cef_binary_108.4.13%2Bga98cd4c%2Bchromium-108.0.5359.125_linux64.tar.bz2"
+          else
+            CEF_URL="https://cef-builds.spotifycdn.com/cef_binary_110.0.18%2Bg877cbe7%2Bchromium-110.0.5481.30_linuxarm64_beta.tar.bz2"
+          fi
+
+          # 下载并解压
+          wget -q $CEF_URL -O cef.tar.bz2
+          tar -xjf cef.tar.bz2 --strip-components=1
+          # 拷贝核心文件：只拷贝存在的文件，避免报错
+          cp Release/libcef.so ./
+          # 兼容不同 CEF 版本的子进程文件名
+          if [ -f "Release/cef_helper" ]; then
+            cp Release/cef_helper ./
+          elif [ -f "Release/chrome-sandbox" ]; then
+            cp Release/chrome-sandbox ./cef_helper
+          fi
+          cd ../..
+        shell: /usr/bin/bash -e {0}
+
+      - name: 编译 ${{ matrix.arch }} 架构程序
+        run: |
+          mkdir -p output/${{ matrix.arch }}
+          if [ "${{ matrix.arch }}" = "amd64" ]; then
+            CXX=g++
+          else
+            CXX=aarch64-linux-gnu-g++
+          fi
+
+          $CXX -std=c++17 -fPIC -Wall -static-libstdc++ -Wl,-rpath=./ \
+            -I./include -I./include/cef \
+            src/main.cpp src/config_parser.cpp src/global_context.cpp src/cyber_browser.cpp src/cyber_v8_handler.cpp src/ini.c \
+            -L./lib/${{ matrix.arch }} -lcef -lpthread -ldl -lrt \
+            -o output/${{ matrix.arch }}/CyberWinBrowser
+
+          # 拷贝运行依赖：只拷贝存在的文件
+          cp lib/${{ matrix.arch }}/libcef.so output/${{ matrix.arch }}/
+          if [ -f "lib/${{ matrix.arch }}/cef_helper" ]; then
+            cp lib/${{ matrix.arch }}/cef_helper output/${{ matrix.arch }}/
+          fi
+        shell: /usr/bin/bash -e {0}
+
+      - name: 上传编译产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: CyberWinBrowser-${{ matrix.arch }}
+          path: output/${{ matrix.arch }}/
