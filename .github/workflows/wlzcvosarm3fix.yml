@@ -12,6 +12,8 @@ jobs:
     strategy:
       matrix:
         arch: [amd64, arm64] # 同时编译两个架构
+    # 防止一个架构失败导致另一个中断
+    continue-on-error: false
 
     steps:
       - name: 拉取源码
@@ -21,6 +23,8 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y g++ gcc-aarch64-linux-gnu wget unzip
+          # 验证编译器版本
+          ${{ matrix.arch == 'amd64' && 'g++ --version' || 'aarch64-linux-gnu-g++ --version' }}
 
       - name: 下载对应架构 CEF 预编译库
         run: |
@@ -35,16 +39,31 @@ jobs:
             CEF_URL="https://cef-builds.spotifycdn.com/cef_binary_110.0.18%2Bg877cbe7%2Bchromium-110.0.5481.30_linuxarm64_beta.tar.bz2"
           fi
 
-          # 下载并解压
-          wget -q $CEF_URL -O cef.tar.bz2
+          # 下载并解压，添加超时和重试
+          wget -q --timeout=30 --tries=3 $CEF_URL -O cef.tar.bz2
+          if [ ! -f cef.tar.bz2 ]; then
+            echo "CEF 库下载失败"
+            exit 1
+          fi
           tar -xjf cef.tar.bz2 --strip-components=1
-          # 拷贝核心文件：只拷贝存在的文件，避免报错
-          cp Release/libcef.so ./
-          # 兼容不同 CEF 版本的子进程文件名
+          
+          # 拷贝核心文件：兼容不同 CEF 版本目录结构
+          if [ -f "Release/libcef.so" ]; then
+            cp Release/libcef.so ./
+          elif [ -f "libcef.so" ]; then
+            cp libcef.so ./
+          else
+            echo "未找到 libcef.so"
+            exit 1
+          fi
+          
+          # 兼容子进程文件名
           if [ -f "Release/cef_helper" ]; then
             cp Release/cef_helper ./
           elif [ -f "Release/chrome-sandbox" ]; then
             cp Release/chrome-sandbox ./cef_helper
+          elif [ -f "chrome-sandbox" ]; then
+            cp chrome-sandbox ./cef_helper
           fi
           cd ../..
         shell: /usr/bin/bash -e {0}
@@ -58,21 +77,35 @@ jobs:
             CXX=aarch64-linux-gnu-g++
           fi
 
+          # 核心优化：提升头文件搜索优先级，明确指定路径
           $CXX -std=c++17 -fPIC -Wall -static-libstdc++ -Wl,-rpath=./ \
-            -I./include -I./include/cef \
+            -I./include \
+            -I./include/cef \
+            -I./include/cef/internal \
             src/main.cpp src/config_parser.cpp src/global_context.cpp src/cyber_browser.cpp src/cyber_v8_handler.cpp src/ini.c \
-            -L./lib/${{ matrix.arch }} -lcef -lpthread -ldl -lrt \
+            -L./lib/${{ matrix.arch }} -lcef -lpthread -ldl -lrt -lm \
             -o output/${{ matrix.arch }}/CyberWinBrowser
 
-          # 拷贝运行依赖：只拷贝存在的文件
-          cp lib/${{ matrix.arch }}/libcef.so output/${{ matrix.arch }}/
+          # 拷贝运行依赖，增加存在性判断
+          if [ -f "lib/${{ matrix.arch }}/libcef.so" ]; then
+            cp lib/${{ matrix.arch }}/libcef.so output/${{ matrix.arch }}/
+          fi
           if [ -f "lib/${{ matrix.arch }}/cef_helper" ]; then
             cp lib/${{ matrix.arch }}/cef_helper output/${{ matrix.arch }}/
+          fi
+          
+          # 验证编译产物
+          if [ ! -f output/${{ matrix.arch }}/CyberWinBrowser ]; then
+            echo "编译失败，未生成可执行文件"
+            exit 1
           fi
         shell: /usr/bin/bash -e {0}
 
       - name: 上传编译产物
         uses: actions/upload-artifact@v4
         with:
-          name: CyberWinBrowser-${{ matrix.arch }}
+          name: 东方仙盟浏览器-${{ matrix.arch }}
           path: output/${{ matrix.arch }}/
+          # 保留 30 天
+          retention-days: 30
+
