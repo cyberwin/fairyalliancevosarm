@@ -11,35 +11,41 @@ jobs:
     runs-on: ubuntu-22.04
     strategy:
       matrix:
-        arch: [amd64, arm64] # 同时编译两个架构
-    # 防止一个架构失败导致另一个中断
+        arch: [amd64, arm64]
     continue-on-error: false
 
     steps:
       - name: 拉取源码
         uses: actions/checkout@v4
 
-      - name: 安装编译依赖
+      - name: 安装编译依赖（修复 ARM64 编译器）
         run: |
-          sudo apt update
-          sudo apt install -y g++ gcc-aarch64-linux-gnu wget unzip
-          # 验证编译器版本
-          ${{ matrix.arch == 'amd64' && 'g++ --version' || 'aarch64-linux-gnu-g++ --version' }}
+          sudo apt update -y
+          # 明确安装 ARM64 交叉编译工具链完整包
+          sudo apt install -y --no-install-recommends \
+            g++ \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            wget \
+            unzip
+          # 验证编译器是否安装成功
+          if [ "${{ matrix.arch }}" = "amd64" ]; then
+            g++ --version || { echo "g++ 安装失败"; exit 1; }
+          else
+            aarch64-linux-gnu-g++ --version || { echo "aarch64-linux-gnu-g++ 安装失败"; exit 1; }
+          fi
 
       - name: 下载对应架构 CEF 预编译库
         run: |
-          # 创建 lib 目录
           mkdir -p lib/${{ matrix.arch }}
           cd lib/${{ matrix.arch }}
 
-          # 区分架构使用指定下载地址
           if [ "${{ matrix.arch }}" = "amd64" ]; then
             CEF_URL="https://cef-builds.spotifycdn.com/cef_binary_108.4.13%2Bga98cd4c%2Bchromium-108.0.5359.125_linux64.tar.bz2"
           else
             CEF_URL="https://cef-builds.spotifycdn.com/cef_binary_110.0.18%2Bg877cbe7%2Bchromium-110.0.5481.30_linuxarm64_beta.tar.bz2"
           fi
 
-          # 下载并解压，添加超时和重试
           wget -q --timeout=30 --tries=3 $CEF_URL -O cef.tar.bz2
           if [ ! -f cef.tar.bz2 ]; then
             echo "CEF 库下载失败"
@@ -47,7 +53,6 @@ jobs:
           fi
           tar -xjf cef.tar.bz2 --strip-components=1
           
-          # 拷贝核心文件：兼容不同 CEF 版本目录结构
           if [ -f "Release/libcef.so" ]; then
             cp Release/libcef.so ./
           elif [ -f "libcef.so" ]; then
@@ -57,7 +62,6 @@ jobs:
             exit 1
           fi
           
-          # 兼容子进程文件名
           if [ -f "Release/cef_helper" ]; then
             cp Release/cef_helper ./
           elif [ -f "Release/chrome-sandbox" ]; then
@@ -71,13 +75,13 @@ jobs:
       - name: 编译 ${{ matrix.arch }} 架构程序
         run: |
           mkdir -p output/${{ matrix.arch }}
+          # 显式指定编译器路径，防止命令找不到
           if [ "${{ matrix.arch }}" = "amd64" ]; then
-            CXX=g++
+            CXX=$(which g++)
           else
-            CXX=aarch64-linux-gnu-g++
+            CXX=$(which aarch64-linux-gnu-g++)
           fi
 
-          # 核心优化：提升头文件搜索优先级，明确指定路径
           $CXX -std=c++17 -fPIC -Wall -static-libstdc++ -Wl,-rpath=./ \
             -I./include \
             -I./include/cef \
@@ -86,7 +90,6 @@ jobs:
             -L./lib/${{ matrix.arch }} -lcef -lpthread -ldl -lrt -lm \
             -o output/${{ matrix.arch }}/CyberWinBrowser
 
-          # 拷贝运行依赖，增加存在性判断
           if [ -f "lib/${{ matrix.arch }}/libcef.so" ]; then
             cp lib/${{ matrix.arch }}/libcef.so output/${{ matrix.arch }}/
           fi
@@ -94,7 +97,6 @@ jobs:
             cp lib/${{ matrix.arch }}/cef_helper output/${{ matrix.arch }}/
           fi
           
-          # 验证编译产物
           if [ ! -f output/${{ matrix.arch }}/CyberWinBrowser ]; then
             echo "编译失败，未生成可执行文件"
             exit 1
@@ -106,6 +108,5 @@ jobs:
         with:
           name: 东方仙盟浏览器-${{ matrix.arch }}
           path: output/${{ matrix.arch }}/
-          # 保留 30 天
           retention-days: 30
 
