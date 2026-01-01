@@ -1,0 +1,117 @@
+name: 东方仙盟芯片幻境
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            cef_dir: CEF_AMD64
+            cef_url: https://cef-builds.spotifycdn.com/cef_binary_108.4.13%2Bga98cd4c%2Bchromium-108.0.5359.125_linux64.tar.bz2
+          - arch: arm64
+            cef_dir: CEF_ARM64
+            # 替换为真实可用的 ARM64 版 CEF 下载地址（社区适配国产系统版本最佳）
+            cef_url: https://xxx.com/cef_binary_xxx_linuxarm64.tar.bz2
+    continue-on-error: false
+
+    steps:
+      - name: 拉取源码
+        uses: actions/checkout@v4
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt update -y
+          sudo apt install -y --no-install-recommends \
+            g++ \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            wget \
+            unzip
+          if [ "${{ matrix.arch }}" = "amd64" ]; then
+            g++ --version || exit 1
+          else
+            aarch64-linux-gnu-g++ --version || exit 1
+          fi
+
+      - name: 🔧 创建独立 CEF 架构目录 + 自动放入头文件/库文件
+        run: |
+          # 定义当前架构的 CEF 目录（根目录下的 CEF_AMD64 / CEF_ARM64）
+          CEF_DIR=${{ matrix.cef_dir }}
+          # 创建目录结构：include 放头文件，lib 放库文件
+          mkdir -p $CEF_DIR/include $CEF_DIR/lib
+          echo "已创建独立 CEF 目录: $CEF_DIR"
+
+          # 下载对应架构 CEF 预编译包
+          wget -q --timeout=30 --tries=3 ${{ matrix.cef_url }} -O $CEF_DIR/cef.tar.bz2
+          if [ ! -f $CEF_DIR/cef.tar.bz2 ]; then
+            echo "CEF 包下载失败"
+            exit 1
+          fi
+
+          # 解压到临时目录
+          mkdir -p $CEF_DIR/tmp
+          tar -xjf $CEF_DIR/cef.tar.bz2 -C $CEF_DIR/tmp --strip-components=1
+
+          # 核心：将官方头文件、库文件拷贝到对应目录
+          cp -r $CEF_DIR/tmp/include/* $CEF_DIR/include/
+          cp -r $CEF_DIR/tmp/lib/* $CEF_DIR/lib/
+          # 确保 libcef.so 存在
+          if [ -f $CEF_DIR/tmp/libcef.so ]; then
+            cp $CEF_DIR/tmp/libcef.so $CEF_DIR/lib/
+          fi
+
+          # 兼容子进程文件
+          if [ -f $CEF_DIR/tmp/Release/cef_helper ]; then
+            cp $CEF_DIR/tmp/Release/cef_helper $CEF_DIR/lib/
+          elif [ -f $CEF_DIR/tmp/Release/chrome-sandbox ]; then
+            cp $CEF_DIR/tmp/Release/chrome-sandbox $CEF_DIR/lib/cef_helper
+          fi
+
+          # 清理临时文件
+          rm -rf $CEF_DIR/tmp $CEF_DIR/cef.tar.bz2
+          echo "$CEF_DIR 目录已放入头文件和库文件"
+
+      - name: 🛠️ 编译 ${{ matrix.arch }} 架构程序
+        run: |
+          CEF_DIR=${{ matrix.cef_dir }}
+          mkdir -p output/${{ matrix.arch }}
+
+          if [ "${{ matrix.arch }}" = "amd64" ]; then
+            CXX=$(which g++)
+          else
+            CXX=$(which aarch64-linux-gnu-g++)
+          fi
+
+          $CXX -std=c++17 -fPIC -Wall -static-libstdc++ -Wl,-rpath=./ \
+            -I./include \
+            -I$CEF_DIR/include \  # 引用当前架构的 CEF 头文件
+            src/main.cpp src/config_parser.cpp src/global_context.cpp src/cyber_browser.cpp src/cyber_v8_handler.cpp src/ini.c \
+            -L$CEF_DIR/lib -lcef -lpthread -ldl -lrt -lm -lX11 \  # 链接当前架构的 CEF 库
+            -o output/${{ matrix.arch }}/CyberWinBrowser
+
+          # 拷贝运行时依赖
+          cp $CEF_DIR/lib/libcef.so output/${{ matrix.arch }}/
+          if [ -f $CEF_DIR/lib/cef_helper ]; then
+            cp $CEF_DIR/lib/cef_helper output/${{ matrix.arch }}/
+          fi
+
+          # 验证产物
+          if [ ! -f output/${{ matrix.arch }}/CyberWinBrowser ]; then
+            echo "编译失败：未生成可执行文件"
+            exit 1
+          fi
+
+      - name: 📤 上传编译产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: 东方仙盟浏览器-${{ matrix.arch }}
+          path: output/${{ matrix.arch }}/
+          retention-days: 30
