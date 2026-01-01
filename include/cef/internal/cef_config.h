@@ -1,0 +1,14 @@
+#ifndef CEF_CONFIG_H_
+#define CEF_CONFIG_H_
+
+#define CEF_VERSION_MAJOR 108
+#define CEF_VERSION_MINOR 4
+#define CEF_VERSION_BUILD 14
+#define CEF_REVISION "g4e28e4e"
+
+#define CEF_ARCH_ARM64 1
+#define CEF_ARCH_X86_64 1
+
+#define CEF_PLATFORM_LINUX 1
+
+#endif  // CEF_CONFIG_H_
